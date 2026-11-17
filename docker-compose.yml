@@ -14,6 +14,7 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
+
   migrate:
     image: ghcr.io/amacneil/dbmate:2
     environment:
@@ -24,22 +25,47 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+
   api:
     build: .
     environment:
       DATABASE_URL: postgresql://wallet:wallet@postgres:5432/wallet
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
     ports:
       - "8000:8000"
     depends_on:
       migrate:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health').raise_for_status()"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   worker:
     build: .
     command: ["python", "-m", "worker.scheduler"]
     environment:
       DATABASE_URL: postgresql://wallet:wallet@postgres:5432/wallet
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      RECONCILE_ON_START: ${RECONCILE_ON_START:-false}
     depends_on:
       migrate:
         condition: service_completed_successfully
+
+  seed:
+    profiles: ["seed"]
+    build: .
+    command: ["python", "-m", "scripts.seed"]
+    environment:
+      DATABASE_URL: postgresql://wallet:wallet@postgres:5432/wallet
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
 volumes:
   pgdata:

@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Start the full stack
+        run: docker compose up -d --build --wait
+
+      - name: Pytest suite
+        run: docker compose exec -T api python -m pytest -q
+
+      - name: Stampede acceptance (20 runs)
+        run: docker compose exec -T api python -m scripts.stampede --runs 20
+
+      - name: Seed smoke dataset
+        run: docker compose exec -T api python -m scripts.seed --users 10 --wallets-per-user 2 --transfers 200
+
+      - name: Seed full dataset
+        run: docker compose exec -T api python -m scripts.seed
+
+      - name: Verify seeded counts and balanced books
+        run: |
+          docker compose exec -T api python - <<'PY'
+          from app.db import connection, pool
+          from app.reconciliation import reconcile
+
+          if pool.closed:
+              pool.open()
+          with connection() as conn:
+              counts = {
+                  "users": conn.execute("SELECT count(*) AS n FROM users").fetchone()["n"],
+                  "transfers": conn.execute("SELECT count(*) AS n FROM transfers").fetchone()["n"],
+                  "ledger_entries": conn.execute("SELECT count(*) AS n FROM ledger_entries").fetchone()["n"],
+                  "wallets": conn.execute(
+                      "SELECT count(*) AS n FROM accounts WHERE owner_user_id IS NOT NULL"
+                  ).fetchone()["n"],
+              }
+          print(counts)
+          assert counts == {
+              "users": 1000,
+              "transfers": 100000,
+              "ledger_entries": 200000,
+              "wallets": 2000,
+          }
+          result = reconcile(triggered_by="ci")
+          print(result["status"], result["counts"])
+          assert result["status"] == "passed"
+          assert result["problems"] == []
+          PY
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose logs --no-color
